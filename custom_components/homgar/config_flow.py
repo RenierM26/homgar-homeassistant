@@ -1,4 +1,5 @@
 """Config flow for HomGar integration."""
+
 from __future__ import annotations
 
 import logging
@@ -7,20 +8,20 @@ from typing import Any
 
 import voluptuous as vol
 
-from homeassistant import config_entries
+from homeassistant.config_entries import ConfigFlow as HAConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
-from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
 
 from .api import HomgarApiClient
 from .const import DOMAIN
+from .homgarapi import HomgarApiException
 
 _LOGGER = logging.getLogger(__name__)
 
 # Constants
 DEFAULT_AREA_CODE = "31"
 MAX_AREA_CODE_LENGTH = 3
-EMAIL_REGEX = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
+EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
@@ -31,17 +32,17 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
 )
 
 
-class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class ConfigFlow(HAConfigFlow, domain=DOMAIN):
     """Handle a config flow for HomGar."""
 
     VERSION = 1
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle the initial step."""
         errors: dict[str, str] = {}
-        
+
         if user_input is not None:
             # Validate input format first
             validation_errors = self._validate_input_format(user_input)
@@ -51,7 +52,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 # Check for existing entries with same email
                 await self.async_set_unique_id(user_input[CONF_EMAIL].lower())
                 self._abort_if_unique_id_configured()
-                
+
                 try:
                     info = await self._validate_api_connection(user_input)
                 except CannotConnect:
@@ -60,8 +61,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     errors["base"] = "invalid_auth"
                 except InvalidAreaCode:
                     errors["area_code"] = "invalid_area_code"
-                except Exception as err:  # pylint: disable=broad-except
-                    _LOGGER.exception("Unexpected exception during setup: %s", err)
+                except Exception:  # pylint: disable=broad-except
+                    _LOGGER.exception("Unexpected exception during setup")
                     errors["base"] = "unknown"
                 else:
                     return self.async_create_entry(title=info["title"], data=user_input)
@@ -73,21 +74,21 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def _validate_input_format(self, data: dict[str, Any]) -> dict[str, str]:
         """Validate input format before attempting API connection."""
         errors: dict[str, str] = {}
-        
+
         # Validate email format
         email = data.get(CONF_EMAIL, "").strip()
         if not email:
             errors[CONF_EMAIL] = "email_required"
         elif not EMAIL_REGEX.match(email):
             errors[CONF_EMAIL] = "invalid_email"
-        
+
         # Validate password
         password = data.get(CONF_PASSWORD, "")
         if not password:
             errors[CONF_PASSWORD] = "password_required"
         elif len(password) < 3:  # Basic length check
             errors[CONF_PASSWORD] = "password_too_short"
-        
+
         # Validate area code
         area_code = data.get("area_code", "").strip()
         if area_code:
@@ -97,42 +98,41 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["area_code"] = "area_code_too_long"
             elif len(area_code) == 0:
                 errors["area_code"] = "area_code_empty"
-        
+
         return errors
 
-async def _validate_api_connection(self, data: dict[str, Any]) -> dict[str, Any]:
-    """Validate the user input allows us to connect to the API."""
-    # Clean up the data
-    clean_data = {
-        CONF_EMAIL: data[CONF_EMAIL].strip().lower(),
-        CONF_PASSWORD: data[CONF_PASSWORD],
-        "area_code": data.get("area_code", DEFAULT_AREA_CODE).strip()
-    }
-    
-    # Test API connection
-    api_client = HomgarApiClient(
-        email=clean_data[CONF_EMAIL],
-        password=clean_data[CONF_PASSWORD],
-        area_code=clean_data["area_code"]
-    )
-    
-    try:
-        await self.hass.async_add_executor_job(api_client.ensure_logged_in)
-        homes = await self.hass.async_add_executor_job(api_client.get_homes)
-        
+    async def _validate_api_connection(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Validate the user input allows us to connect to the API."""
+        clean_data = {
+            CONF_EMAIL: data[CONF_EMAIL].strip().lower(),
+            CONF_PASSWORD: data[CONF_PASSWORD],
+            "area_code": data.get("area_code", DEFAULT_AREA_CODE).strip(),
+        }
+
+        api_client = HomgarApiClient(
+            email=clean_data[CONF_EMAIL],
+            password=clean_data[CONF_PASSWORD],
+            area_code=clean_data["area_code"],
+        )
+
+        try:
+            await self.hass.async_add_executor_job(api_client.ensure_logged_in)
+            homes = await self.hass.async_add_executor_job(api_client.get_homes)
+        except HomgarApiException as err:
+            error_code = err.args[0] if err.args else ""
+            error_message = (err.args[1] if len(err.args) > 1 else str(err)).lower()
+            if isinstance(error_code, str) and error_code == "invalid_auth":
+                raise InvalidAuth from err
+            if any(keyword in error_message for keyword in ("area", "zone", "region")):
+                raise InvalidAreaCode from err
+            raise CannotConnect from err
+        except Exception as err:
+            raise CannotConnect from err
+
         if not homes:
             raise InvalidAreaCode("No homes found for this area code")
-            
+
         return {"title": f"HomGar ({clean_data[CONF_EMAIL]})"}
-        
-    except Exception as err:
-        error_str = str(err).lower()
-        if "credentials" in error_str or "401" in error_str:
-            raise InvalidAuth from err
-        elif "area" in error_str or "zone" in error_str:
-            raise InvalidAreaCode from err
-        else:
-            raise CannotConnect from err
 
 
 class CannotConnect(HomeAssistantError):
