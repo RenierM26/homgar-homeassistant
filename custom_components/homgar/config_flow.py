@@ -8,12 +8,24 @@ from typing import Any
 
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigFlow as HAConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow as HAConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+    OptionsFlowWithConfigEntry,
+)
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.exceptions import HomeAssistantError
 
 from .api import HomgarApiClient
-from .const import DOMAIN
+from .const import (
+    CONF_SCAN_INTERVAL_MINUTES,
+    DEFAULT_SCAN_INTERVAL_MINUTES,
+    DOMAIN,
+    SCAN_INTERVAL_MINUTES_MAX,
+    SCAN_INTERVAL_MINUTES_MIN,
+)
 from .homgarapi import HomgarApiException
 
 _LOGGER = logging.getLogger(__name__)
@@ -70,6 +82,11 @@ class ConfigFlow(HAConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors
         )
+
+    @staticmethod
+    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
+        """Return the options flow handler."""
+        return HomgarOptionsFlowHandler(config_entry)
 
     def _validate_input_format(self, data: dict[str, Any]) -> dict[str, str]:
         """Validate input format before attempting API connection."""
@@ -133,6 +150,40 @@ class ConfigFlow(HAConfigFlow, domain=DOMAIN):
             raise InvalidAreaCode("No homes found for this area code")
 
         return {"title": f"HomGar ({clean_data[CONF_EMAIL]})"}
+
+
+class HomgarOptionsFlowHandler(OptionsFlowWithConfigEntry):
+    """Handle HomGar options."""
+
+    def __init__(self, config_entry: ConfigEntry) -> None:
+        """Initialise options flow."""
+        super().__init__(config_entry)
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Manage the HomGar options."""
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        current_interval = self.config_entry.options.get(
+            CONF_SCAN_INTERVAL_MINUTES, DEFAULT_SCAN_INTERVAL_MINUTES
+        )
+        options_schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_SCAN_INTERVAL_MINUTES,
+                    default=current_interval,
+                ): vol.All(
+                    vol.Coerce(int),
+                    vol.Range(
+                        min=SCAN_INTERVAL_MINUTES_MIN,
+                        max=SCAN_INTERVAL_MINUTES_MAX,
+                    ),
+                )
+            }
+        )
+        return self.async_show_form(step_id="init", data_schema=options_schema)
 
 
 class CannotConnect(HomeAssistantError):

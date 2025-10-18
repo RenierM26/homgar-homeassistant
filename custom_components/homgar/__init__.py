@@ -12,13 +12,18 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import HomgarApiClient
-from .const import DOMAIN
+from .const import (
+    CONF_SCAN_INTERVAL_MINUTES,
+    DEFAULT_SCAN_INTERVAL_MINUTES,
+    DOMAIN,
+    SCAN_INTERVAL_MINUTES_MAX,
+    SCAN_INTERVAL_MINUTES_MIN,
+)
 from .homgarapi import HomgarApiException
 
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]
-SCAN_INTERVAL = timedelta(minutes=5)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -28,6 +33,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
@@ -46,6 +52,7 @@ class HomgarDataUpdateCoordinator(DataUpdateCoordinator[dict[str, list[Any]]]):
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         """Initialize."""
+        self.entry = entry
         self.api = HomgarApiClient(
             email=entry.data["email"],
             password=entry.data["password"],
@@ -53,12 +60,13 @@ class HomgarDataUpdateCoordinator(DataUpdateCoordinator[dict[str, list[Any]]]):
         )
         self.homes: list[Any] = []
         self.devices: list[Any] = []
+        scan_interval = _determine_scan_interval(entry)
 
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
-            update_interval=SCAN_INTERVAL,
+            update_interval=scan_interval,
         )
 
     async def _async_update_data(self) -> dict[str, list[Any]]:
@@ -92,3 +100,21 @@ class HomgarDataUpdateCoordinator(DataUpdateCoordinator[dict[str, list[Any]]]):
                 self.devices.extend(hub.subdevices)
 
         _LOGGER.debug("Total devices discovered: %d", len(self.devices))
+
+
+def _determine_scan_interval(entry: ConfigEntry) -> timedelta:
+    """Calculate the scan interval for the given entry."""
+    raw_value = entry.options.get(
+        CONF_SCAN_INTERVAL_MINUTES, DEFAULT_SCAN_INTERVAL_MINUTES
+    )
+    try:
+        minutes = int(raw_value)
+    except (TypeError, ValueError):
+        minutes = DEFAULT_SCAN_INTERVAL_MINUTES
+    minutes = max(SCAN_INTERVAL_MINUTES_MIN, min(minutes, SCAN_INTERVAL_MINUTES_MAX))
+    return timedelta(minutes=minutes)
+
+
+async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Handle config entry options update."""
+    await hass.config_entries.async_reload(entry.entry_id)

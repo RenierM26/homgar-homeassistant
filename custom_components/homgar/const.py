@@ -2,6 +2,12 @@
 
 DOMAIN = "homgar"
 
+# Options
+CONF_SCAN_INTERVAL_MINUTES = "scan_interval_minutes"
+DEFAULT_SCAN_INTERVAL_MINUTES = 1
+SCAN_INTERVAL_MINUTES_MIN = 1
+SCAN_INTERVAL_MINUTES_MAX = 60
+
 # Device types
 DEVICE_TYPE_HUB = "hub"
 DEVICE_TYPE_SOIL_MOISTURE = "soil_moisture"

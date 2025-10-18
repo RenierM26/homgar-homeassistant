@@ -27,5 +27,46 @@
     "abort": {
       "already_configured": "Account is already configured"
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "HomGar Options",
+        "description": "Adjust advanced HomGar settings",
+        "data": {
+          "scan_interval_minutes": "Update interval (minutes)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "temperature": {"name": "Temperature"},
+      "humidity": {"name": "Humidity"},
+      "temperature_max": {"name": "Temperature Max"},
+      "temperature_min": {"name": "Temperature Min"},
+      "humidity_max": {"name": "Humidity Max"},
+      "humidity_min": {"name": "Humidity Min"},
+      "co2": {"name": "CO2"},
+      "co2_min": {"name": "CO2 Min"},
+      "co2_max": {"name": "CO2 Max"},
+      "co2_alert": {"name": "CO2 Alert Threshold"},
+      "pressure": {"name": "Pressure"},
+      "soil_moisture": {"name": "Soil Moisture"},
+      "light": {"name": "Light"},
+      "rainfall_total": {"name": "Total Rainfall"},
+      "rainfall_hourly": {"name": "Hourly Rainfall"},
+      "rainfall_daily": {"name": "Daily Rainfall"},
+      "rainfall_weekly": {"name": "7-Day Rainfall"},
+      "rssi": {"name": "Signal Strength"},
+      "rf_rssi": {"name": "RF Signal Strength"},
+      "wifi_rssi": {"name": "WiFi Signal Strength"},
+      "battery": {"name": "Battery"},
+      "battery_state": {"name": "Battery State"},
+      "pool_water_temperature": {"name": "Water Temperature"},
+      "pool_water_temperature_max": {"name": "Water Temperature Max"},
+      "pool_water_temperature_min": {"name": "Water Temperature Min"},
+      "last_seen": {"name": "Last Seen"}
+    }
   }
 }

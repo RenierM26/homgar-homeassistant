@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-import datetime
+from dataclasses import dataclass
 import logging
-from typing import Any
+from typing import Any, Generic, TypeVar, cast
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -15,6 +15,7 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
+    CONCENTRATION_PARTS_PER_MILLION,
     LIGHT_LUX,
     PERCENTAGE,
     EntityCategory,
@@ -25,13 +26,16 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 
 from . import HomgarDataUpdateCoordinator
 from .const import DOMAIN
+from .entity import HomgarBaseEntity
 from .homgarapi.devices import (
+    HomgarDevice,
     HomgarHubDevice,
     RainPointAirSensor,
+    RainPointCO2Sensor,
     RainPointDisplayHub,
     RainPointGatewayHub,
     RainPointPoolSensor,
@@ -41,101 +45,137 @@ from .homgarapi.devices import (
 
 _LOGGER = logging.getLogger(__name__)
 
+
+def _log_sensor_debug(unique_id: str, message: str, *args: Any) -> None:
+    """Log a sensor-scoped debug message."""
+    if _LOGGER.isEnabledFor(logging.DEBUG):
+        formatted = message % args if args else message
+        _LOGGER.debug("Sensor %s: %s", unique_id, formatted)
+
+
 SENSOR_DESCRIPTIONS: dict[str, SensorEntityDescription] = {
     "temperature": SensorEntityDescription(
         key="temperature",
-        name="Temperature",
+        translation_key="temperature",
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
     ),
     "humidity": SensorEntityDescription(
         key="humidity",
-        name="Humidity",
+        translation_key="humidity",
         device_class=SensorDeviceClass.HUMIDITY,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=PERCENTAGE,
     ),
     "temperature_max": SensorEntityDescription(
         key="temperature_max",
-        name="Temperature Max",
+        translation_key="temperature_max",
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
     ),
     "temperature_min": SensorEntityDescription(
         key="temperature_min",
-        name="Temperature Min",
+        translation_key="temperature_min",
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
     ),
     "humidity_max": SensorEntityDescription(
         key="humidity_max",
-        name="Humidity Max",
+        translation_key="humidity_max",
         device_class=SensorDeviceClass.HUMIDITY,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=PERCENTAGE,
     ),
     "humidity_min": SensorEntityDescription(
         key="humidity_min",
-        name="Humidity Min",
+        translation_key="humidity_min",
         device_class=SensorDeviceClass.HUMIDITY,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=PERCENTAGE,
     ),
+    "co2": SensorEntityDescription(
+        key="co2",
+        translation_key="co2",
+        device_class=SensorDeviceClass.CO2,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=CONCENTRATION_PARTS_PER_MILLION,
+    ),
+    "co2_min": SensorEntityDescription(
+        key="co2_min",
+        translation_key="co2_min",
+        device_class=SensorDeviceClass.CO2,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=CONCENTRATION_PARTS_PER_MILLION,
+    ),
+    "co2_max": SensorEntityDescription(
+        key="co2_max",
+        translation_key="co2_max",
+        device_class=SensorDeviceClass.CO2,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=CONCENTRATION_PARTS_PER_MILLION,
+    ),
+    "co2_alert": SensorEntityDescription(
+        key="co2_alert",
+        translation_key="co2_alert",
+        device_class=SensorDeviceClass.CO2,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=CONCENTRATION_PARTS_PER_MILLION,
+    ),
     "pressure": SensorEntityDescription(
         key="pressure",
-        name="Pressure",
+        translation_key="pressure",
         device_class=SensorDeviceClass.PRESSURE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfPressure.PA,
     ),
     "soil_moisture": SensorEntityDescription(
         key="soil_moisture",
-        name="Soil Moisture",
+        translation_key="soil_moisture",
         device_class=SensorDeviceClass.MOISTURE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=PERCENTAGE,
     ),
     "light": SensorEntityDescription(
         key="light",
-        name="Light",
+        translation_key="light",
         device_class=SensorDeviceClass.ILLUMINANCE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=LIGHT_LUX,
     ),
     "rainfall_total": SensorEntityDescription(
         key="rainfall_total",
-        name="Total Rainfall",
+        translation_key="rainfall_total",
         device_class=SensorDeviceClass.PRECIPITATION,
         state_class=SensorStateClass.TOTAL_INCREASING,
         native_unit_of_measurement=UnitOfLength.MILLIMETERS,
     ),
     "rainfall_hourly": SensorEntityDescription(
         key="rainfall_hourly",
-        name="Hourly Rainfall",
+        translation_key="rainfall_hourly",
         device_class=SensorDeviceClass.PRECIPITATION_INTENSITY,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement="mm/h",
     ),
     "rainfall_daily": SensorEntityDescription(
         key="rainfall_daily",
-        name="Daily Rainfall",
+        translation_key="rainfall_daily",
         device_class=SensorDeviceClass.PRECIPITATION,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfLength.MILLIMETERS,
     ),
     "rainfall_weekly": SensorEntityDescription(
         key="rainfall_weekly",
-        name="7-Day Rainfall",
+        translation_key="rainfall_weekly",
         device_class=SensorDeviceClass.PRECIPITATION,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfLength.MILLIMETERS,
     ),
     "rssi": SensorEntityDescription(
         key="rssi",
-        name="Signal Strength",
+        translation_key="rssi",
         device_class=SensorDeviceClass.SIGNAL_STRENGTH,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement="dBm",
@@ -143,7 +183,7 @@ SENSOR_DESCRIPTIONS: dict[str, SensorEntityDescription] = {
     ),
     "battery": SensorEntityDescription(
         key="battery",
-        name="Battery",
+        translation_key="battery",
         device_class=SensorDeviceClass.BATTERY,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=PERCENTAGE,
@@ -151,34 +191,35 @@ SENSOR_DESCRIPTIONS: dict[str, SensorEntityDescription] = {
     ),
     "battery_state": SensorEntityDescription(
         key="battery_state",
-        name="Battery State",
+        translation_key="battery_state",
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     "pool_water_temp": SensorEntityDescription(
         key="pool_water_temperature",
-        name="Water Temperature",
+        translation_key="pool_water_temperature",
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
     ),
     "pool_water_temp_max": SensorEntityDescription(
         key="pool_water_temperature_max",
-        name="Water Temperature Max",
+        translation_key="pool_water_temperature_max",
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
     ),
     "pool_water_temp_min": SensorEntityDescription(
         key="pool_water_temperature_min",
-        name="Water Temperature Min",
+        translation_key="pool_water_temperature_min",
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
     ),
     "last_seen": SensorEntityDescription(
         key="last_seen",
-        name="Last Data Received",
+        translation_key="last_seen",
         device_class=SensorDeviceClass.TIMESTAMP,
+        entity_category=EntityCategory.DIAGNOSTIC,
     ),
 }
 
@@ -187,7 +228,7 @@ def create_rf_rssi_description() -> SensorEntityDescription:
     """Create RF RSSI sensor description."""
     return SensorEntityDescription(
         key="rf_rssi",
-        name="RF Signal Strength",
+        translation_key="rf_rssi",
         device_class=SensorDeviceClass.SIGNAL_STRENGTH,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement="dBm",
@@ -199,7 +240,7 @@ def create_wifi_rssi_description() -> SensorEntityDescription:
     """Create WiFi RSSI sensor description."""
     return SensorEntityDescription(
         key="wifi_rssi",
-        name="WiFi Signal Strength",
+        translation_key="wifi_rssi",
         device_class=SensorDeviceClass.SIGNAL_STRENGTH,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement="dBm",
@@ -223,14 +264,14 @@ def _get_description(key: str) -> SensorEntityDescription | None:
         fallback_map: dict[str, SensorEntityDescription] = {
             "humidity": SensorEntityDescription(
                 key="humidity",
-                name="Humidity",
+                translation_key="humidity",
                 device_class=SensorDeviceClass.HUMIDITY,
                 state_class=SensorStateClass.MEASUREMENT,
                 native_unit_of_measurement=PERCENTAGE,
             ),
             "battery": SensorEntityDescription(
                 key="battery",
-                name="Battery",
+                translation_key="battery",
                 device_class=SensorDeviceClass.BATTERY,
                 state_class=SensorStateClass.MEASUREMENT,
                 native_unit_of_measurement=PERCENTAGE,
@@ -238,19 +279,19 @@ def _get_description(key: str) -> SensorEntityDescription | None:
             ),
             "light": SensorEntityDescription(
                 key="light",
-                name="Light",
+                translation_key="light",
                 device_class=SensorDeviceClass.ILLUMINANCE,
                 state_class=SensorStateClass.MEASUREMENT,
                 native_unit_of_measurement=LIGHT_LUX,
             ),
             "battery_state": SensorEntityDescription(
                 key="battery_state",
-                name="Battery State",
+                translation_key="battery_state",
                 entity_category=EntityCategory.DIAGNOSTIC,
             ),
             "pool_water_temp": SensorEntityDescription(
                 key="pool_water_temperature",
-                name="Water Temperature",
+                translation_key="pool_water_temperature",
                 device_class=SensorDeviceClass.TEMPERATURE,
                 state_class=SensorStateClass.MEASUREMENT,
                 native_unit_of_measurement=UnitOfTemperature.CELSIUS,
@@ -268,50 +309,104 @@ def _get_description(key: str) -> SensorEntityDescription | None:
     return description
 
 
+DeviceT = TypeVar("DeviceT")
+
+
+@dataclass(frozen=True)
+class SensorSpec(Generic[DeviceT]):
+    """Configuration describing how to obtain a sensor value."""
+
+    attr_name: str | None = None
+    value_fn: Callable[[DeviceT], Any] | None = None
+    allow_none: bool = True
+    requires_attribute: bool = True
+
+    @classmethod
+    def from_attribute(
+        cls,
+        attr_name: str,
+        *,
+        allow_none: bool = True,
+        requires_attribute: bool = True,
+    ) -> SensorSpec[DeviceT]:
+        """Create a spec that reads from a device attribute."""
+        return cls(
+            attr_name=attr_name,
+            allow_none=allow_none,
+            requires_attribute=requires_attribute,
+        )
+
+    @classmethod
+    def from_callable(
+        cls,
+        value_fn: Callable[[DeviceT], Any],
+        *,
+        allow_none: bool = True,
+    ) -> SensorSpec[DeviceT]:
+        """Create a spec that uses a custom callable for values."""
+        return cls(
+            value_fn=value_fn,
+            allow_none=allow_none,
+            requires_attribute=False,
+        )
+
+    def build_value_fn(self) -> Callable[[DeviceT], Any]:
+        """Return the callable that should supply sensor values."""
+        if self.value_fn is not None:
+            return self.value_fn
+        if self.attr_name is None:
+            msg = "SensorSpec requires either attr_name or value_fn"
+            raise ValueError(msg)
+        getter = _attribute_getter(self.attr_name)
+        return cast(Callable[[DeviceT], Any], getter)
+
+    def should_add(self, device: DeviceT) -> bool:
+        """Return True when the sensor should be created for the device."""
+        if self.requires_attribute:
+            if self.attr_name is None:
+                msg = "SensorSpec requires attr_name when requires_attribute is True"
+                raise ValueError(msg)
+            if not hasattr(device, self.attr_name):
+                return False
+            try:
+                attr_value = getattr(device, self.attr_name)
+            except AttributeError:
+                return False
+            if attr_value is None and not self.allow_none:
+                return False
+        elif not self.allow_none:
+            value_getter = self.build_value_fn()
+            try:
+                candidate_value = value_getter(device)
+            except (AttributeError, TypeError, ValueError):
+                return False
+            if candidate_value is None:
+                return False
+        return True
+
+
 def create_sensor_if_exists(
     sensors: list[HomgarSensor],
     coordinator: HomgarDataUpdateCoordinator,
-    device: Any,
-    attr_name: str,
+    device: DeviceT,
     description: SensorEntityDescription,
-    value_fn: Callable[[Any], Any] | None = None,
-    *,
-    allow_none: bool = True,
-    requires_attribute: bool = True,
+    spec: SensorSpec[DeviceT],
 ) -> None:
-    """Helper to create sensor if attribute exists on device."""
-    if not requires_attribute and value_fn is None:
-        raise ValueError("value_fn must be provided when requires_attribute is False")
-
+    """Helper to create sensor if the spec deems it available."""
     supports_sensor = getattr(device, "supports_sensor", lambda key: True)
     if not supports_sensor(description.key):
         return
 
-    if requires_attribute:
-        if not hasattr(device, attr_name):
-            return
-        try:
-            attr_value = getattr(device, attr_name)
-        except AttributeError:
-            return
-        if attr_value is None and not allow_none:
-            return
-    elif not allow_none:
-        assert value_fn is not None
-        try:
-            candidate_value = value_fn(device)
-        except (AttributeError, TypeError, ValueError):
-            return
-        if candidate_value is None:
-            return
+    if not spec.should_add(device):
+        return
 
-    final_value_fn = value_fn or _attribute_getter(attr_name)
+    value_fn = cast(Callable[[Any], Any], spec.build_value_fn())
     sensors.append(
         HomgarSensor(
             coordinator,
             device,
             description,
-            final_value_fn,
+            value_fn,
         )
     )
 
@@ -336,10 +431,10 @@ def add_common_sensors(
             sensors,
             coordinator,
             device,
-            "temperature",
             description,
-            lambda d: getattr(d, "temperature_c", None),
-            requires_attribute=False,
+            SensorSpec[HomgarDevice].from_callable(
+                lambda dev: cast(float | None, getattr(dev, "temperature_c", None))
+            ),
         )
 
     # Humidity sensor (common pattern)
@@ -352,10 +447,10 @@ def add_common_sensors(
             sensors,
             coordinator,
             device,
-            "humidity",
             description,
-            lambda d: getattr(d, "humidity_pct", None),
-            requires_attribute=False,
+            SensorSpec[HomgarDevice].from_callable(
+                lambda dev: cast(int | None, getattr(dev, "humidity_pct", None))
+            ),
         )
 
     # RF RSSI sensor (common pattern)
@@ -363,9 +458,8 @@ def add_common_sensors(
         sensors,
         coordinator,
         device,
-        "rf_rssi",
         create_rf_rssi_description(),
-        allow_none=False,
+        SensorSpec[HomgarDevice].from_attribute("rf_rssi", allow_none=False),
     )
 
     # Battery sensor (common pattern)
@@ -375,8 +469,8 @@ def add_common_sensors(
                 sensors,
                 coordinator,
                 device,
-                "battery_level",
                 description,
+                SensorSpec[HomgarDevice].from_attribute("battery_level"),
             )
     if description := _get_description("battery_state"):
         if getattr(device, "HAS_BATTERY", True):
@@ -384,20 +478,22 @@ def add_common_sensors(
                 sensors,
                 coordinator,
                 device,
-                "battery_state",
                 description,
-                lambda d: d.battery_state,
+                SensorSpec[HomgarDevice].from_attribute("battery_state"),
             )
-    if (description := _get_description("last_seen")) and getattr(device, "last_seen", None):
+    if (description := _get_description("last_seen")) and getattr(
+        device, "last_seen", None
+    ):
         create_sensor_if_exists(
             sensors,
             coordinator,
             device,
-            "last_seen",
             description,
-            lambda d: datetime.datetime.fromisoformat(str(d.last_seen)) if d.last_seen else None,
-            allow_none=True,
-            requires_attribute=False,
+            SensorSpec[HomgarDevice].from_callable(
+                lambda dev: dt_util.parse_datetime(str(dev.last_seen))
+                if getattr(dev, "last_seen", None)
+                else None
+            ),
         )
 
 
@@ -425,8 +521,7 @@ async def async_setup_entry(
                 if hub_identifier not in registered_hubs:
                     device_kwargs: dict[str, Any] = {
                         "manufacturer": "RainPoint",
-                        "model": getattr(device, "model", None)
-                        or device.FRIENDLY_DESC,
+                        "model": getattr(device, "model", None) or device.FRIENDLY_DESC,
                         "name": getattr(device, "name", None) or "RainPoint Hub",
                     }
                     if sw_version := getattr(device, "sw_version", None):
@@ -450,6 +545,8 @@ async def async_setup_entry(
             device_sensors = _create_rain_sensors(coordinator, device)
         elif isinstance(device, RainPointAirSensor):
             device_sensors = _create_air_sensors(coordinator, device)
+        elif isinstance(device, RainPointCO2Sensor):
+            device_sensors = _create_co2_sensors(coordinator, device)
         elif isinstance(device, RainPointPoolSensor):
             device_sensors = _create_pool_sensors(coordinator, device)
         else:
@@ -502,12 +599,16 @@ def _create_hub_sensors(
             sensors,
             coordinator,
             device,
-            "press_pa_current",
             description,
+            SensorSpec[RainPointDisplayHub].from_attribute("press_pa_current"),
         )
 
     create_sensor_if_exists(
-        sensors, coordinator, device, "wifi_rssi", create_wifi_rssi_description()
+        sensors,
+        coordinator,
+        device,
+        create_wifi_rssi_description(),
+        SensorSpec[RainPointDisplayHub].from_attribute("wifi_rssi"),
     )
 
     return sensors
@@ -525,8 +626,8 @@ def _create_gateway_sensors(
         sensors,
         coordinator,
         device,
-        "wifi_rssi",
         create_wifi_rssi_description(),
+        SensorSpec[RainPointGatewayHub].from_attribute("wifi_rssi"),
     )
     if getattr(device, "HAS_BATTERY", True):
         if description := _get_description("battery_state"):
@@ -534,9 +635,10 @@ def _create_gateway_sensors(
                 sensors,
                 coordinator,
                 device,
-                "status_fields",
                 description,
-                lambda d: d.status_fields.get("battery_state"),
+                SensorSpec[RainPointGatewayHub].from_callable(
+                    lambda dev: dev.status_fields.get("battery_state")
+                ),
             )
 
     return sensors
@@ -557,8 +659,10 @@ def _create_soil_moisture_sensors(
             sensors,
             coordinator,
             device,
-            "moist_percent_current",
             description,
+            SensorSpec[RainPointSoilMoistureSensor].from_attribute(
+                "moist_percent_current"
+            ),
         )
 
     if description := _get_description("light"):
@@ -566,17 +670,16 @@ def _create_soil_moisture_sensors(
             sensors,
             coordinator,
             device,
-            "light_lux_current",
             description,
+            SensorSpec[RainPointSoilMoistureSensor].from_attribute("light_lux_current"),
         )
     if description := _get_description("battery_state"):
         create_sensor_if_exists(
             sensors,
             coordinator,
             device,
-            "battery_state",
             description,
-            lambda d: d.battery_state,
+            SensorSpec[RainPointSoilMoistureSensor].from_attribute("battery_state"),
         )
 
     return sensors
@@ -588,28 +691,13 @@ def _create_rain_sensors(
     """Create sensors for rain sensor."""
     sensors: list[HomgarSensor] = []
 
-    # Add common sensors (only RF RSSI and battery for rain sensors)
-    create_sensor_if_exists(
-        sensors, coordinator, device, "rf_rssi", create_rf_rssi_description()
+    add_common_sensors(
+        sensors,
+        coordinator,
+        device,
+        include_temperature=False,
+        include_humidity=False,
     )
-
-    if description := _get_description("battery"):
-        create_sensor_if_exists(
-            sensors,
-            coordinator,
-            device,
-            "battery_level",
-            description,
-        )
-    if description := _get_description("battery_state"):
-        create_sensor_if_exists(
-            sensors,
-            coordinator,
-            device,
-            "battery_state",
-            description,
-            lambda d: d.battery_state,
-        )
 
     # Rain specific sensors
     if description := _get_description("rainfall_total"):
@@ -617,8 +705,8 @@ def _create_rain_sensors(
             sensors,
             coordinator,
             device,
-            "rainfall_mm_total",
             description,
+            SensorSpec[RainPointRainSensor].from_attribute("rainfall_mm_total"),
         )
 
     if description := _get_description("rainfall_hourly"):
@@ -626,8 +714,8 @@ def _create_rain_sensors(
             sensors,
             coordinator,
             device,
-            "rainfall_mm_hour",
             description,
+            SensorSpec[RainPointRainSensor].from_attribute("rainfall_mm_hour"),
         )
 
     if description := _get_description("rainfall_daily"):
@@ -635,8 +723,8 @@ def _create_rain_sensors(
             sensors,
             coordinator,
             device,
-            "rainfall_mm_daily",
             description,
+            SensorSpec[RainPointRainSensor].from_attribute("rainfall_mm_daily"),
         )
 
     if description := _get_description("rainfall_weekly"):
@@ -644,8 +732,8 @@ def _create_rain_sensors(
             sensors,
             coordinator,
             device,
-            "rainfall_mm_7days",
             description,
+            SensorSpec[RainPointRainSensor].from_attribute("rainfall_mm_7days"),
         )
 
     return sensors
@@ -664,49 +752,101 @@ def _create_air_sensors(
             sensors,
             coordinator,
             device,
-            "temperature_max",
             description,
-            lambda d: getattr(d, "temperature_c_max", None),
-            requires_attribute=False,
+            SensorSpec[RainPointAirSensor].from_callable(
+                lambda sensor: sensor.temperature_c_max
+            ),
         )
     if description := _get_description("temperature_min"):
         create_sensor_if_exists(
             sensors,
             coordinator,
             device,
-            "temperature_min",
             description,
-            lambda d: getattr(d, "temperature_c_min", None),
-            requires_attribute=False,
+            SensorSpec[RainPointAirSensor].from_callable(
+                lambda sensor: sensor.temperature_c_min
+            ),
         )
     if description := _get_description("humidity_max"):
         create_sensor_if_exists(
             sensors,
             coordinator,
             device,
-            "humidity_max",
             description,
-            lambda d: getattr(d, "humidity_pct_max", None),
-            requires_attribute=False,
+            SensorSpec[RainPointAirSensor].from_callable(
+                lambda sensor: sensor.humidity_pct_max
+            ),
         )
     if description := _get_description("humidity_min"):
         create_sensor_if_exists(
             sensors,
             coordinator,
             device,
-            "humidity_min",
             description,
-            lambda d: getattr(d, "humidity_pct_min", None),
-            requires_attribute=False,
+            SensorSpec[RainPointAirSensor].from_callable(
+                lambda sensor: sensor.humidity_pct_min
+            ),
         )
     if description := _get_description("battery_state"):
         create_sensor_if_exists(
             sensors,
             coordinator,
             device,
-            "battery_state",
             description,
-            lambda d: d.battery_state,
+            SensorSpec[RainPointAirSensor].from_attribute("battery_state"),
+        )
+
+    return sensors
+
+
+def _create_co2_sensors(
+    coordinator: HomgarDataUpdateCoordinator, device: Any
+) -> list[HomgarSensor]:
+    """Create sensors for CO₂ sensor."""
+    sensors: list[HomgarSensor] = []
+
+    add_common_sensors(sensors, coordinator, device)
+
+    if description := _get_description("co2"):
+        create_sensor_if_exists(
+            sensors,
+            coordinator,
+            device,
+            description,
+            SensorSpec[RainPointCO2Sensor].from_callable(
+                lambda sensor: sensor.co2_ppm,
+                allow_none=False,
+            ),
+        )
+    if description := _get_description("co2_min"):
+        create_sensor_if_exists(
+            sensors,
+            coordinator,
+            device,
+            description,
+            SensorSpec[RainPointCO2Sensor].from_callable(
+                lambda sensor: sensor.co2_min_ppm
+            ),
+        )
+    if description := _get_description("co2_max"):
+        create_sensor_if_exists(
+            sensors,
+            coordinator,
+            device,
+            description,
+            SensorSpec[RainPointCO2Sensor].from_callable(
+                lambda sensor: sensor.co2_max_ppm
+            ),
+        )
+    if description := _get_description("co2_alert"):
+        create_sensor_if_exists(
+            sensors,
+            coordinator,
+            device,
+            description,
+            SensorSpec[RainPointCO2Sensor].from_callable(
+                lambda sensor: sensor.co2_alert_ppm
+            ),
         )
 
     return sensors
@@ -730,45 +870,44 @@ def _create_pool_sensors(
             sensors,
             coordinator,
             device,
-            "water_temperature",
             description,
-            lambda d: getattr(d, "water_temperature_c", None),
-            requires_attribute=False,
+            SensorSpec[RainPointPoolSensor].from_callable(
+                lambda sensor: sensor.water_temperature_c
+            ),
         )
     if description := _get_description("pool_water_temp_max"):
         create_sensor_if_exists(
             sensors,
             coordinator,
             device,
-            "water_temperature_max",
             description,
-            lambda d: getattr(d, "water_temperature_c_max", None),
-            requires_attribute=False,
+            SensorSpec[RainPointPoolSensor].from_callable(
+                lambda sensor: sensor.water_temperature_c_max
+            ),
         )
     if description := _get_description("pool_water_temp_min"):
         create_sensor_if_exists(
             sensors,
             coordinator,
             device,
-            "water_temperature_min",
             description,
-            lambda d: getattr(d, "water_temperature_c_min", None),
-            requires_attribute=False,
+            SensorSpec[RainPointPoolSensor].from_callable(
+                lambda sensor: sensor.water_temperature_c_min
+            ),
         )
     if description := _get_description("battery_state"):
         create_sensor_if_exists(
             sensors,
             coordinator,
             device,
-            "battery_state",
             description,
-            lambda d: d.battery_state,
+            SensorSpec[RainPointPoolSensor].from_attribute("battery_state"),
         )
 
     return sensors
 
 
-class HomgarSensor(CoordinatorEntity, SensorEntity):
+class HomgarSensor(HomgarBaseEntity, SensorEntity):
     """HomGar sensor."""
 
     def __init__(
@@ -779,142 +918,42 @@ class HomgarSensor(CoordinatorEntity, SensorEntity):
         value_fn: Callable[[Any], Any],
     ) -> None:
         """Initialize the sensor."""
-        super().__init__(coordinator)
+        name_suffix = description.name if isinstance(description.name, str) else None
+        HomgarBaseEntity.__init__(
+            self,
+            coordinator,
+            device,
+            key=description.key,
+            name_suffix=name_suffix,
+            has_entity_name=name_suffix is None,
+        )
+        SensorEntity.__init__(self)
         self.entity_description = description
-        self._device = device
         self._value_fn = value_fn
-
-        # Safely get device identifiers with fallbacks
-        device_mid = getattr(device, "mid", "unknown")
-        device_did = getattr(device, "did", "unknown")
-        device_name = getattr(device, "name", "Unknown Device")
-
-        self._attr_unique_id = f"{device_mid}_{device_did}_{description.key}"
-        self._attr_name = f"{device_name} {description.name}"
-
-    @property
-    def device_info(self) -> dr.DeviceInfo:
-        """Return device information."""
-        device_mid = getattr(self._device, "mid", "unknown")
-        device_did = getattr(self._device, "did", "unknown")
-        device_name = getattr(self._device, "name", "Unknown Device")
-        device_model = getattr(self._device, "model", None)
-        device_sw_version = getattr(self._device, "sw_version", None)
-        device_serial = getattr(self._device, "serial_number", None)
-
-        # For hub devices (main devices)
-        if isinstance(self._device, HomgarHubDevice):
-            device_info = dr.DeviceInfo(
-                identifiers={(DOMAIN, str(device_mid))},
-                name=device_name,
-                manufacturer="RainPoint",
-                model=device_model or getattr(
-                    self._device, "FRIENDLY_DESC", "Hub"
-                ),
-            )
-        # For sub-devices that connect through a hub
-        else:
-            via_device: tuple[str, str] | None = None
-            if device_mid not in ("unknown", None):
-                via_device = (DOMAIN, str(device_mid))
-            device_info = dr.DeviceInfo(
-                identifiers={(DOMAIN, f"{device_mid}_{device_did}")},
-                name=device_name,
-                manufacturer="RainPoint",
-                model=device_model or "Sensor",
-            )
-            if via_device is not None:
-                device_info["via_device"] = via_device
-
-        # Add optional fields if available
-        if device_sw_version:
-            device_info["sw_version"] = device_sw_version
-        if device_serial:
-            device_info["serial_number"] = device_serial
-
-        return device_info
 
     @property
     def native_value(self) -> Any:
         """Return the state of the sensor."""
-        device_mid = getattr(self._device, "mid", None)
-        device_did = getattr(self._device, "did", None)
-
-        if device_mid is None or device_did is None:
-            _LOGGER.warning("Device missing mid or did: %s", self._attr_unique_id)
+        self._refresh_device_reference()
+        runtime_device = self._resolve_runtime_device()
+        if runtime_device is None:
+            unique_id = self.unique_id or self._attr_unique_id or "unknown"
+            _log_sensor_debug(unique_id, "device not found")
             return None
 
-        for device in self.coordinator.data.get("devices", []):
-            if (
-                getattr(device, "mid", None) == device_mid
-                and getattr(device, "did", None) == device_did
-            ):
-                try:
-                    value = self._value_fn(device)
-                except (AttributeError, TypeError, ValueError) as err:
-                    _LOGGER.debug(
-                        "Error getting value for %s: %s", self._attr_unique_id, err
-                    )
-                    return None
-                _LOGGER.debug("Got value %s for sensor %s", value, self._attr_unique_id)
-                return value
-
-        _LOGGER.debug("Device not found for sensor %s", self._attr_unique_id)
-        return None
+        try:
+            value = self._value_fn(runtime_device)
+        except (AttributeError, TypeError, ValueError) as err:
+            unique_id = self.unique_id or self._attr_unique_id or "unknown"
+            _log_sensor_debug(unique_id, "error getting value: %s", err)
+            return None
+        unique_id = self.unique_id or self._attr_unique_id or "unknown"
+        _log_sensor_debug(unique_id, "value=%s", value)
+        return value
 
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        if not self.coordinator.last_update_success:
+        if not super().available:
             return False
-
-        # Check if device is online if that information is available
-        if hasattr(self._device, "online"):
-            return getattr(self._device, "online", True)
-
-        # Check if we have a valid value
         return self.native_value is not None
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any] | None:
-        """Return additional state attributes."""
-        attributes: dict[str, Any] = {}
-
-        # Add device online status if available
-        if hasattr(self._device, "online"):
-            attributes["device_online"] = getattr(self._device, "online", False)
-
-        # Add last seen timestamp if available
-        if hasattr(self._device, "last_seen"):
-            last_seen = getattr(self._device, "last_seen", None)
-            if last_seen:
-                attributes["last_seen"] = last_seen
-
-        # Add signal quality indicators
-        if hasattr(self._device, "rf_rssi"):
-            rf_rssi = getattr(self._device, "rf_rssi", None)
-            if rf_rssi is not None:
-                attributes["rf_signal_quality"] = (
-                    "Excellent"
-                    if rf_rssi > -50
-                    else "Good"
-                    if rf_rssi > -70
-                    else "Fair"
-                    if rf_rssi > -85
-                    else "Poor"
-                )
-
-        if hasattr(self._device, "wifi_rssi"):
-            wifi_rssi = getattr(self._device, "wifi_rssi", None)
-            if wifi_rssi is not None:
-                attributes["wifi_signal_quality"] = (
-                    "Excellent"
-                    if wifi_rssi > -50
-                    else "Good"
-                    if wifi_rssi > -70
-                    else "Fair"
-                    if wifi_rssi > -85
-                    else "Poor"
-                )
-
-        return attributes if attributes else None
