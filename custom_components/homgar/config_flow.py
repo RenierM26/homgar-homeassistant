@@ -49,6 +49,10 @@ class ConfigFlow(HAConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    def __init__(self) -> None:
+        """Initialise the config flow."""
+        self._reauth_entry: ConfigEntry | None = None
+
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -66,7 +70,9 @@ class ConfigFlow(HAConfigFlow, domain=DOMAIN):
                 self._abort_if_unique_id_configured()
 
                 try:
-                    info = await self._validate_api_connection(user_input)
+                    result = await self._validate_api_connection(user_input)
+                except LoginFailed:
+                    errors["base"] = "login_failed"
                 except CannotConnect:
                     errors["base"] = "cannot_connect"
                 except InvalidAuth:
@@ -77,10 +83,91 @@ class ConfigFlow(HAConfigFlow, domain=DOMAIN):
                     _LOGGER.exception("Unexpected exception during setup")
                     errors["base"] = "unknown"
                 else:
-                    return self.async_create_entry(title=info["title"], data=user_input)
+                    return self.async_create_entry(
+                        title=result["title"],
+                        data=result["data"],
+                    )
 
         return self.async_show_form(
             step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors
+        )
+
+    async def async_step_reauth(self, user_input: dict[str, Any]) -> ConfigFlowResult:
+        """Handle the reauthentication step."""
+        entry_id = self.context.get("entry_id")
+        if entry_id:
+            self._reauth_entry = self.hass.config_entries.async_get_entry(entry_id)
+        if self._reauth_entry is not None:
+            await self.async_set_unique_id(
+                self._reauth_entry.data[CONF_EMAIL].lower(),
+                raise_on_progress=False,
+            )
+        if self._reauth_entry is None:
+            _LOGGER.error("Reauth requested but no entry found")
+            return self.async_abort(reason="reauth_failed")
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Confirm updated credentials during reauth."""
+        assert self._reauth_entry is not None
+        errors: dict[str, str] = {}
+        stored_data = self._reauth_entry.data
+        default_area = stored_data.get("area_code", DEFAULT_AREA_CODE)
+
+        if user_input is not None:
+            merged_input = {
+                CONF_EMAIL: stored_data[CONF_EMAIL],
+                CONF_PASSWORD: user_input[CONF_PASSWORD],
+                "area_code": user_input.get("area_code", default_area),
+            }
+
+            format_errors = self._validate_input_format(merged_input)
+            if format_errors:
+                errors.update(format_errors)
+            else:
+                try:
+                    result = await self._validate_api_connection(merged_input)
+                except LoginFailed:
+                    errors["base"] = "login_failed"
+                except CannotConnect:
+                    errors["base"] = "cannot_connect"
+                except InvalidAuth:
+                    errors["base"] = "invalid_auth"
+                except InvalidAreaCode:
+                    errors["area_code"] = "invalid_area_code"
+                except Exception:  # pylint: disable=broad-except
+                    _LOGGER.exception("Unexpected exception during reauth")
+                    errors["base"] = "unknown"
+                else:
+                    new_data = {
+                        CONF_EMAIL: result["data"][CONF_EMAIL],
+                        CONF_PASSWORD: result["data"][CONF_PASSWORD],
+                        "area_code": result["data"]["area_code"],
+                    }
+                    self.hass.config_entries.async_update_entry(
+                        self._reauth_entry,
+                        data=new_data,
+                    )
+                    await self.hass.config_entries.async_reload(
+                        self._reauth_entry.entry_id
+                    )
+                    return self.async_abort(reason="reauth_successful")
+
+        reauth_schema = vol.Schema(
+            {
+                vol.Required(CONF_PASSWORD): str,
+                vol.Optional("area_code", default=default_area): str,
+            }
+        )
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=reauth_schema,
+            errors=errors,
+            description_placeholders={
+                "email": stored_data[CONF_EMAIL],
+            },
         )
 
     @staticmethod
@@ -120,10 +207,12 @@ class ConfigFlow(HAConfigFlow, domain=DOMAIN):
 
     async def _validate_api_connection(self, data: dict[str, Any]) -> dict[str, Any]:
         """Validate the user input allows us to connect to the API."""
+        area_code_raw = data.get("area_code", DEFAULT_AREA_CODE)
+        clean_area_code = area_code_raw.strip() or DEFAULT_AREA_CODE
         clean_data = {
             CONF_EMAIL: data[CONF_EMAIL].strip().lower(),
             CONF_PASSWORD: data[CONF_PASSWORD],
-            "area_code": data.get("area_code", DEFAULT_AREA_CODE).strip(),
+            "area_code": clean_area_code,
         }
 
         api_client = HomgarApiClient(
@@ -136,10 +225,13 @@ class ConfigFlow(HAConfigFlow, domain=DOMAIN):
             await self.hass.async_add_executor_job(api_client.ensure_logged_in)
             homes = await self.hass.async_add_executor_job(api_client.get_homes)
         except HomgarApiException as err:
-            error_code = err.args[0] if err.args else ""
-            error_message = (err.args[1] if len(err.args) > 1 else str(err)).lower()
-            if isinstance(error_code, str) and error_code == "invalid_auth":
+            error_code = getattr(err, "code", None)
+            error_message_raw = getattr(err, "message", "") or str(err)
+            error_message = error_message_raw.lower()
+            if error_code == "invalid_auth":
                 raise InvalidAuth from err
+            if error_code == "login_failed":
+                raise LoginFailed from err
             if any(keyword in error_message for keyword in ("area", "zone", "region")):
                 raise InvalidAreaCode from err
             raise CannotConnect from err
@@ -149,15 +241,14 @@ class ConfigFlow(HAConfigFlow, domain=DOMAIN):
         if not homes:
             raise InvalidAreaCode("No homes found for this area code")
 
-        return {"title": f"HomGar ({clean_data[CONF_EMAIL]})"}
+        return {
+            "title": f"HomGar ({clean_data[CONF_EMAIL]})",
+            "data": clean_data,
+        }
 
 
 class HomgarOptionsFlowHandler(OptionsFlowWithConfigEntry):
     """Handle HomGar options."""
-
-    def __init__(self, config_entry: ConfigEntry) -> None:
-        """Initialise options flow."""
-        super().__init__(config_entry)
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -196,3 +287,7 @@ class InvalidAuth(HomeAssistantError):
 
 class InvalidAreaCode(HomeAssistantError):
     """Error to indicate invalid area code."""
+
+
+class LoginFailed(HomeAssistantError):
+    """Error to indicate the HomGar API rejected login for non-auth reasons."""

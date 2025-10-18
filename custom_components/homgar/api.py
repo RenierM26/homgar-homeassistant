@@ -44,15 +44,46 @@ class HomgarApiClient:
 
         except HomgarApiException as err:
             error_str = str(err).lower()
-            if "invalid_auth" in error_str:
+            error_code = getattr(err, "code", None)
+            error_code_str = str(error_code).lower() if error_code is not None else ""
+            error_message = str(getattr(err, "message", "") or "").lower()
+            token_error = "token error" in error_message
+
+            if (
+                "invalid_auth" in error_str
+                or "invalid_auth" in error_message
+                or error_code_str == "invalid_auth"
+                or token_error
+            ):
                 _LOGGER.error(
                     "Authentication failed for HomGar API - check credentials: %s",
                     err,
                 )
                 _raise_homgar_exception("invalid_auth", "Invalid credentials", err)
-            if "connection_timeout" in error_str:
+            if (
+                "connection_timeout" in error_message
+                or "connection_timeout" in error_str
+                or error_code_str == "connection_timeout"
+                or ("timeout" in error_message and "connection" in error_message)
+            ):
                 _LOGGER.error("Connection timeout to HomGar API: %s", err)
                 _raise_homgar_exception("connection_timeout", "Connection timeout", err)
+            if (
+                "login_failed" in error_str
+                or "login_failed" in error_message
+                or error_code_str == "login_failed"
+            ):
+                _LOGGER.warning(
+                    "HomGar login attempt failed (code=%s, message=%s): %s",
+                    error_code,
+                    getattr(err, "message", ""),
+                    err,
+                )
+                _raise_homgar_exception(
+                    "login_failed",
+                    "Login failed; please retry or verify region credentials",
+                    err,
+                )
             _LOGGER.error(
                 "Failed to login to HomGar API: %s",
                 err,

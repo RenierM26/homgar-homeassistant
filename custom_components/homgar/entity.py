@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
@@ -11,7 +12,7 @@ from homeassistant.helpers.update_coordinator import (
 )
 
 from .const import DOMAIN
-from .homgarapi.devices import HomgarHubDevice
+from .homgarapi.devices import HomgarDevice, HomgarHubDevice
 
 
 class HomgarBaseEntity(CoordinatorEntity):
@@ -76,8 +77,7 @@ class HomgarBaseEntity(CoordinatorEntity):
                 identifiers={(DOMAIN, str(self._device_mid))},
                 name=device_name,
                 manufacturer="RainPoint",
-                model=device_model
-                or getattr(self._device, "FRIENDLY_DESC", "Hub"),
+                model=device_model or getattr(self._device, "FRIENDLY_DESC", "Hub"),
             )
         else:
             via_device: tuple[str, str] | None = None
@@ -135,3 +135,41 @@ class HomgarBaseEntity(CoordinatorEntity):
         if not self.coordinator.last_update_success:
             return False
         return self._device_is_online()
+
+
+def _ensure_hub_registered(
+    device_registry: dr.DeviceRegistry,
+    registered_hubs: set[tuple[str, str]],
+    config_entry: ConfigEntry,
+    device: HomgarDevice,
+) -> None:
+    """Register hub information with the device registry when required."""
+
+    if not isinstance(device, HomgarHubDevice):
+        return
+
+    device_mid = getattr(device, "mid", None)
+    mid_str = str(device_mid)
+    if not mid_str or mid_str.lower() == "unknown":
+        return
+
+    hub_identifier = (DOMAIN, mid_str)
+    if hub_identifier in registered_hubs:
+        return
+
+    device_kwargs: dict[str, Any] = {
+        "manufacturer": "RainPoint",
+        "model": getattr(device, "model", None) or device.FRIENDLY_DESC,
+        "name": getattr(device, "name", None) or "RainPoint Hub",
+    }
+    if sw_version := getattr(device, "sw_version", None):
+        device_kwargs["sw_version"] = sw_version
+    if serial := getattr(device, "serial_number", None):
+        device_kwargs["serial_number"] = serial
+
+    device_registry.async_get_or_create(
+        config_entry_id=config_entry.entry_id,
+        identifiers={hub_identifier},
+        **device_kwargs,
+    )
+    registered_hubs.add(hub_identifier)

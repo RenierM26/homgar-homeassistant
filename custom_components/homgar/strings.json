@@ -9,23 +9,34 @@
           "password": "Password",
           "area_code": "Area Code"
         }
+      },
+      "reauth_confirm": {
+        "title": "Reauthenticate HomGar",
+        "description": "Session for {email} expired or was revoked. Please confirm your credentials.",
+        "data": {
+          "password": "Password",
+          "area_code": "Area Code"
+        }
       }
     },
     "error": {
       "cannot_connect": "Failed to connect to HomGar API",
       "invalid_auth": "Invalid authentication credentials",
+      "login_failed": "Login failed. Please try again or verify your region settings.",
       "invalid_area_code": "Invalid area code for your region",
       "unknown": "Unexpected error occurred",
       "email_required": "Email address is required",
       "invalid_email": "Please enter a valid email address",
-      "password_required": "Password is required", 
+      "password_required": "Password is required",
       "password_too_short": "Password must be at least 3 characters",
       "area_code_not_numeric": "Area code must contain only numbers",
       "area_code_too_long": "Area code cannot exceed 3 digits",
       "area_code_empty": "Area code cannot be empty"
     },
     "abort": {
-      "already_configured": "Account is already configured"
+      "already_configured": "Account is already configured",
+      "reauth_successful": "Reauthentication successful",
+      "reauth_failed": "Reauthentication failed"
     }
   },
   "options": {

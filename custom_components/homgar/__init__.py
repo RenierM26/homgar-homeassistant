@@ -9,6 +9,7 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import HomgarApiClient
@@ -73,6 +74,8 @@ class HomgarDataUpdateCoordinator(DataUpdateCoordinator[dict[str, list[Any]]]):
         """Update data via library."""
         try:
             await self.hass.async_add_executor_job(self._update_data)
+        except ConfigEntryAuthFailed:
+            raise
         except HomgarApiException as exception:
             _LOGGER.error("Error communicating with HomGar API: %s", exception)
             raise UpdateFailed(
@@ -86,20 +89,64 @@ class HomgarDataUpdateCoordinator(DataUpdateCoordinator[dict[str, list[Any]]]):
 
     def _update_data(self) -> None:
         """Fetch data from API endpoint."""
-        self.api.ensure_logged_in()
-        self.homes = self.api.get_homes()
-        self.devices = []
+        homes: list[Any] = []
+        devices: list[Any] = []
 
-        _LOGGER.debug("Found %d homes", len(self.homes))
+        for attempt in range(2):
+            try:
+                self.api.ensure_logged_in()
+                homes = self.api.get_homes()
+                devices = []
 
-        for home in self.homes:
-            hubs = self.api.get_devices_for_hid(home.hid)
-            for hub in hubs:
-                self.api.get_device_status(hub)
-                self.devices.append(hub)
-                self.devices.extend(hub.subdevices)
+                _LOGGER.debug("Found %d homes", len(homes))
 
-        _LOGGER.debug("Total devices discovered: %d", len(self.devices))
+                for home in homes:
+                    hubs = self.api.get_devices_for_hid(home.hid)
+                    for hub in hubs:
+                        self.api.get_device_status(hub)
+                        devices.append(hub)
+                        devices.extend(hub.subdevices)
+
+                _LOGGER.debug("Total devices discovered: %d", len(devices))
+            except HomgarApiException as err:
+                if not self._handle_api_exception(err, attempt):
+                    raise
+            else:
+                self.homes = homes
+                self.devices = devices
+                return
+
+        raise ConfigEntryAuthFailed("HomGar authentication failed after retry")
+
+    def _handle_api_exception(self, err: HomgarApiException, attempt: int) -> bool:
+        """Handle API exceptions with retry or reauth behaviour."""
+        error_code = getattr(err, "code", None)
+        error_message = str(getattr(err, "message", "") or "").lower()
+
+        token_error = error_code == 1004 or "token error" in error_message
+        invalid_auth = error_code in {"invalid_auth", "login_failed"} or any(
+            keyword in error_message
+            for keyword in ("invalid auth", "invalid credential", "invalid credentials")
+        )
+
+        if token_error and attempt == 0:
+            _LOGGER.warning("HomGar token invalidated, attempting re-login")
+            self.api.reset_connection()
+            try:
+                self.api.ensure_logged_in()
+            except HomgarApiException as relog_err:
+                self._raise_auth_failed(relog_err)
+            return True
+
+        if token_error or invalid_auth:
+            self._raise_auth_failed(err)
+
+        return False
+
+    def _raise_auth_failed(self, err: HomgarApiException) -> None:
+        """Raise ConfigEntryAuthFailed with context."""
+        message = getattr(err, "message", "") or str(err)
+        raise ConfigEntryAuthFailed(message) from err
 
 
 def _determine_scan_interval(entry: ConfigEntry) -> timedelta:
