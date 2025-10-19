@@ -10,6 +10,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import HomgarApiClient
@@ -46,6 +47,40 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN].pop(entry.entry_id)
 
     return unload_ok
+
+
+async def async_remove_config_entry_device(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    device_entry: dr.DeviceEntry,
+) -> bool:
+    """Allow removal of orphaned HomGar devices from the device registry."""
+
+    device_registry = dr.async_get(hass)
+    entity_registry = er.async_get(hass)
+
+    identifiers = {
+        identifier for identifier in device_entry.identifiers if identifier[0] == DOMAIN
+    }
+    if not identifiers:
+        return False
+
+    if config_entry.entry_id not in device_entry.config_entries:
+        return False
+
+    # Do not remove hubs (identifiers without a subdevice marker).
+    if any("_" not in identifier[1] for identifier in identifiers):
+        return False
+
+    if er.async_entries_for_device(
+        entity_registry,
+        device_entry.id,
+        include_disabled_entities=True,
+    ):
+        return False
+
+    device_registry.async_remove_device(device_entry.id)
+    return True
 
 
 class HomgarDataUpdateCoordinator(DataUpdateCoordinator[dict[str, list[Any]]]):

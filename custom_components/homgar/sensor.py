@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 import logging
-from typing import Any, Final, Generic, TypeVar, cast
+from typing import Any, Final, Generic, TypeVar
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -26,21 +26,11 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.util import dt as dt_util
 
 from . import HomgarDataUpdateCoordinator
 from .const import DOMAIN
 from .entity import HomgarBaseEntity, _ensure_hub_registered
-from .homgarapi.devices import (
-    HomgarDevice,
-    RainPointAirSensor,
-    RainPointCO2Sensor,
-    RainPointDisplayHub,
-    RainPointGatewayHub,
-    RainPointPoolSensor,
-    RainPointRainSensor,
-    RainPointSoilMoistureSensor,
-)
+from .homgarapi.devices import HomgarDevice
 
 _LOGGER = logging.getLogger(__name__)
 DeviceT = TypeVar("DeviceT")
@@ -57,7 +47,7 @@ def _log_sensor_debug(unique_id: str, message: str, *args: Any) -> None:
 class SensorSpec(Generic[DeviceT]):
     """Configuration describing how to obtain a sensor value."""
 
-    description_key: str
+    description: SensorEntityDescription
     value_fn: Callable[[DeviceT], Any]
     allow_none: bool = True
 
@@ -249,56 +239,12 @@ SENSOR_DESCRIPTIONS: Final[dict[str, SensorEntityDescription]] = {
 }
 
 
-def get_sensor_description(key: str) -> SensorEntityDescription | None:
-    """Safely fetch a sensor description by key."""
-    if description := SENSOR_DESCRIPTIONS.get(key):
-        return description
-    fallback_map: dict[str, SensorEntityDescription] = {
-        "humidity": SensorEntityDescription(
-            key="humidity",
-            translation_key="humidity",
-            device_class=SensorDeviceClass.HUMIDITY,
-            state_class=SensorStateClass.MEASUREMENT,
-            native_unit_of_measurement=PERCENTAGE,
-        ),
-        "battery": SensorEntityDescription(
-            key="battery",
-            translation_key="battery",
-            device_class=SensorDeviceClass.BATTERY,
-            state_class=SensorStateClass.MEASUREMENT,
-            native_unit_of_measurement=PERCENTAGE,
-            entity_category=EntityCategory.DIAGNOSTIC,
-        ),
-        "light": SensorEntityDescription(
-            key="light",
-            translation_key="light",
-            device_class=SensorDeviceClass.ILLUMINANCE,
-            state_class=SensorStateClass.MEASUREMENT,
-            native_unit_of_measurement=LIGHT_LUX,
-        ),
-        "battery_state": SensorEntityDescription(
-            key="battery_state",
-            translation_key="battery_state",
-            entity_category=EntityCategory.DIAGNOSTIC,
-        ),
-        "pool_water_temperature": SensorEntityDescription(
-            key="pool_water_temperature",
-            translation_key="pool_water_temperature",
-            device_class=SensorDeviceClass.TEMPERATURE,
-            state_class=SensorStateClass.MEASUREMENT,
-            native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        ),
-    }
-    if key in fallback_map:
-        description = fallback_map[key]
-        SENSOR_DESCRIPTIONS[key] = description
-        _LOGGER.warning(
-            "Missing sensor description for key '%s', using fallback definition",
-            key,
-        )
-        return description
-    _LOGGER.warning("Missing sensor description for key '%s'", key)
-    return None
+def _require_description(key: str) -> SensorEntityDescription:
+    """Return the sensor description for the provided key or raise."""
+    try:
+        return SENSOR_DESCRIPTIONS[key]
+    except KeyError as err:
+        raise KeyError(f"Missing sensor description for key '{key}'") from err
 
 
 async def async_setup_entry(
@@ -401,28 +347,16 @@ class SensorFactory:
 
     def build(self, device: HomgarDevice) -> list[HomgarSensor]:
         """Return all sensors applicable to the provided device."""
-        if isinstance(device, RainPointDisplayHub):
-            sensors = self._build_display_hub(device)
-        elif isinstance(device, RainPointGatewayHub):
-            sensors = self._build_gateway(device)
-        elif isinstance(device, RainPointSoilMoistureSensor):
-            sensors = self._build_soil(device)
-        elif isinstance(device, RainPointRainSensor):
-            sensors = self._build_rain(device)
-        elif isinstance(device, RainPointAirSensor):
-            sensors = self._build_air(device)
-        elif isinstance(device, RainPointCO2Sensor):
-            sensors = self._build_co2(device)
-        elif isinstance(device, RainPointPoolSensor):
-            sensors = self._build_pool(device)
-        else:
-            _LOGGER.debug(
-                "Unknown device type: %s for device %s",
-                type(device).__name__,
-                getattr(device, "name", "Unknown"),
+        specs = [
+            SensorSpec(
+                _require_description(mapping.key),
+                mapping.value_fn,
+                mapping.allow_none,
             )
-            return []
-
+            for mapping in device.iter_sensor_mappings()
+        ]
+        sensors: list[HomgarSensor] = []
+        self._add_from_specs(sensors, device, specs)
         _LOGGER.debug(
             "Creating %d sensors for device %s (%s)",
             len(sensors),
@@ -431,247 +365,6 @@ class SensorFactory:
         )
         return sensors
 
-    def _build_display_hub(self, device: RainPointDisplayHub) -> list[HomgarSensor]:
-        sensors: list[HomgarSensor] = []
-        self._add_common_sensors(
-            sensors, device, include_temperature=False, include_humidity=False
-        )
-        self._add_from_specs(
-            sensors,
-            device,
-            (
-                SensorSpec[RainPointDisplayHub](
-                    "pressure", lambda dev: getattr(dev, "press_pa_current", None)
-                ),
-                SensorSpec[RainPointDisplayHub](
-                    "wifi_rssi",
-                    lambda dev: getattr(dev, "wifi_rssi", None),
-                    allow_none=False,
-                ),
-            ),
-        )
-        return sensors
-
-    def _build_gateway(self, device: RainPointGatewayHub) -> list[HomgarSensor]:
-        sensors: list[HomgarSensor] = []
-        self._add_common_sensors(
-            sensors, device, include_temperature=False, include_humidity=False
-        )
-        self._add_from_specs(
-            sensors,
-            device,
-            (
-                SensorSpec[RainPointGatewayHub](
-                    "wifi_rssi",
-                    lambda dev: getattr(dev, "wifi_rssi", None),
-                    allow_none=False,
-                ),
-                SensorSpec[RainPointGatewayHub](
-                    "battery_state",
-                    lambda dev: dev.status_fields.get("battery_state")
-                    if getattr(dev, "status_fields", None)
-                    else None,
-                    allow_none=False,
-                ),
-            ),
-        )
-        return sensors
-
-    def _build_soil(self, device: RainPointSoilMoistureSensor) -> list[HomgarSensor]:
-        sensors: list[HomgarSensor] = []
-        self._add_common_sensors(sensors, device)
-        self._add_from_specs(
-            sensors,
-            device,
-            (
-                SensorSpec[RainPointSoilMoistureSensor](
-                    "soil_moisture",
-                    lambda dev: getattr(dev, "moist_percent_current", None),
-                ),
-                SensorSpec[RainPointSoilMoistureSensor](
-                    "light", lambda dev: getattr(dev, "light_lux_current", None)
-                ),
-                SensorSpec[RainPointSoilMoistureSensor](
-                    "battery_state", lambda dev: getattr(dev, "battery_state", None)
-                ),
-            ),
-        )
-        return sensors
-
-    def _build_rain(self, device: RainPointRainSensor) -> list[HomgarSensor]:
-        sensors: list[HomgarSensor] = []
-        self._add_common_sensors(
-            sensors, device, include_temperature=False, include_humidity=False
-        )
-        self._add_from_specs(
-            sensors,
-            device,
-            (
-                SensorSpec[RainPointRainSensor](
-                    "rainfall_total",
-                    lambda dev: getattr(dev, "rainfall_mm_total", None),
-                ),
-                SensorSpec[RainPointRainSensor](
-                    "rainfall_hourly",
-                    lambda dev: getattr(dev, "rainfall_mm_hour", None),
-                ),
-                SensorSpec[RainPointRainSensor](
-                    "rainfall_daily",
-                    lambda dev: getattr(dev, "rainfall_mm_daily", None),
-                ),
-                SensorSpec[RainPointRainSensor](
-                    "rainfall_weekly",
-                    lambda dev: getattr(dev, "rainfall_mm_7days", None),
-                ),
-            ),
-        )
-        return sensors
-
-    def _build_air(self, device: RainPointAirSensor) -> list[HomgarSensor]:
-        sensors: list[HomgarSensor] = []
-        self._add_common_sensors(sensors, device)
-        self._add_from_specs(
-            sensors,
-            device,
-            (
-                SensorSpec[RainPointAirSensor](
-                    "temperature_max", lambda dev: dev.temperature_c_max
-                ),
-                SensorSpec[RainPointAirSensor](
-                    "temperature_min", lambda dev: dev.temperature_c_min
-                ),
-                SensorSpec[RainPointAirSensor](
-                    "humidity_max", lambda dev: dev.humidity_pct_max
-                ),
-                SensorSpec[RainPointAirSensor](
-                    "humidity_min", lambda dev: dev.humidity_pct_min
-                ),
-                SensorSpec[RainPointAirSensor](
-                    "battery_state", lambda dev: dev.battery_state
-                ),
-            ),
-        )
-        return sensors
-
-    def _build_co2(self, device: RainPointCO2Sensor) -> list[HomgarSensor]:
-        sensors: list[HomgarSensor] = []
-        self._add_common_sensors(sensors, device)
-        self._add_from_specs(
-            sensors,
-            device,
-            (
-                SensorSpec[RainPointCO2Sensor](
-                    "co2", lambda dev: dev.co2_ppm, allow_none=False
-                ),
-                SensorSpec[RainPointCO2Sensor]("co2_min", lambda dev: dev.co2_min_ppm),
-                SensorSpec[RainPointCO2Sensor]("co2_max", lambda dev: dev.co2_max_ppm),
-                SensorSpec[RainPointCO2Sensor](
-                    "co2_alert", lambda dev: dev.co2_alert_ppm
-                ),
-            ),
-        )
-        return sensors
-
-    def _build_pool(self, device: RainPointPoolSensor) -> list[HomgarSensor]:
-        sensors: list[HomgarSensor] = []
-        self._add_common_sensors(
-            sensors, device, include_temperature=False, include_humidity=False
-        )
-        self._add_from_specs(
-            sensors,
-            device,
-            (
-                SensorSpec[RainPointPoolSensor](
-                    "pool_water_temp", lambda dev: dev.water_temperature_c
-                ),
-                SensorSpec[RainPointPoolSensor](
-                    "pool_water_temp_max", lambda dev: dev.water_temperature_c_max
-                ),
-                SensorSpec[RainPointPoolSensor](
-                    "pool_water_temp_min", lambda dev: dev.water_temperature_c_min
-                ),
-                SensorSpec[RainPointPoolSensor](
-                    "battery_state", lambda dev: dev.battery_state
-                ),
-            ),
-        )
-        return sensors
-
-    def _add_common_sensors(
-        self,
-        sensors: list[HomgarSensor],
-        device: HomgarDevice,
-        *,
-        include_temperature: bool = True,
-        include_humidity: bool = True,
-    ) -> None:
-        specs: list[SensorSpec[HomgarDevice]] = []
-
-        rf_rssi = getattr(device, "rf_rssi", None)
-        if rf_rssi is not None:
-            specs.append(
-                SensorSpec[HomgarDevice](
-                    "rf_rssi",
-                    lambda dev: getattr(dev, "rf_rssi", None),
-                    allow_none=False,
-                )
-            )
-
-        if include_temperature:
-            temperature = getattr(device, "temperature_c", None)
-            if temperature is not None:
-                specs.append(
-                    SensorSpec[HomgarDevice](
-                        "temperature",
-                        lambda dev: cast(
-                            float | None, getattr(dev, "temperature_c", None)
-                        ),
-                    )
-                )
-        if include_humidity:
-            humidity = getattr(device, "humidity_pct", None)
-            if humidity is not None:
-                specs.append(
-                    SensorSpec[HomgarDevice](
-                        "humidity",
-                        lambda dev: cast(
-                            int | None, getattr(dev, "humidity_pct", None)
-                        ),
-                    )
-                )
-
-        if getattr(device, "HAS_BATTERY", True):
-            battery_level = getattr(device, "battery_level", None)
-            if battery_level is not None:
-                specs.append(
-                    SensorSpec[HomgarDevice](
-                        "battery",
-                        lambda dev: getattr(dev, "battery_level", None),
-                        allow_none=False,
-                    )
-                )
-            battery_state = getattr(device, "battery_state", None)
-            if battery_state is not None:
-                specs.append(
-                    SensorSpec[HomgarDevice](
-                        "battery_state",
-                        lambda dev: getattr(dev, "battery_state", None),
-                        allow_none=False,
-                    )
-                )
-
-        if getattr(device, "last_seen", None) is not None:
-            specs.append(
-                SensorSpec[HomgarDevice](
-                    "last_seen",
-                    lambda dev: dt_util.parse_datetime(str(dev.last_seen))
-                    if getattr(dev, "last_seen", None)
-                    else None,
-                )
-            )
-
-        self._add_from_specs(sensors, device, specs)
-
     def _add_from_specs(
         self,
         sensors: list[HomgarSensor],
@@ -679,9 +372,7 @@ class SensorFactory:
         specs: Sequence[SensorSpec[DeviceT]],
     ) -> None:
         for spec in specs:
-            description = get_sensor_description(spec.description_key)
-            if description is None:
-                continue
+            description = spec.description
             if not self._supports_sensor(device, description.key):
                 continue
             try:
