@@ -77,6 +77,12 @@
       "pool_water_temperature": {"name": "Water Temperature"},
       "pool_water_temperature_max": {"name": "Water Temperature Max"},
       "pool_water_temperature_min": {"name": "Water Temperature Min"},
+      "water_usage_total": {"name": "Total Water Usage"},
+      "water_usage_today": {"name": "Water Usage Today"},
+      "water_usage_last": {"name": "Last Water Usage"},
+      "water_flow": {"name": "Current Water Flow"},
+      "watering_duration": {"name": "Watering Duration"},
+      "watering_last_duration": {"name": "Last Watering Duration"},
       "last_seen": {"name": "Last Seen"}
     }
   }

@@ -22,6 +22,9 @@ from homeassistant.const import (
     UnitOfLength,
     UnitOfPressure,
     UnitOfTemperature,
+    UnitOfTime,
+    UnitOfVolume,
+    UnitOfVolumeFlowRate,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
@@ -230,12 +233,63 @@ SENSOR_DESCRIPTIONS: Final[dict[str, SensorEntityDescription]] = {
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
     ),
+    "water_usage_total": SensorEntityDescription(
+        key="water_usage_total",
+        translation_key="water_usage_total",
+        device_class=SensorDeviceClass.WATER,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        native_unit_of_measurement=UnitOfVolume.LITERS,
+    ),
+    "water_usage_today": SensorEntityDescription(
+        key="water_usage_today",
+        translation_key="water_usage_today",
+        device_class=SensorDeviceClass.WATER,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfVolume.LITERS,
+    ),
+    "water_usage_last": SensorEntityDescription(
+        key="water_usage_last",
+        translation_key="water_usage_last",
+        device_class=SensorDeviceClass.WATER,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfVolume.LITERS,
+    ),
+    "water_flow": SensorEntityDescription(
+        key="water_flow",
+        translation_key="water_flow",
+        device_class=SensorDeviceClass.VOLUME_FLOW_RATE,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfVolumeFlowRate.LITERS_PER_MINUTE,
+    ),
+    "watering_duration": SensorEntityDescription(
+        key="watering_duration",
+        translation_key="watering_duration",
+        device_class=SensorDeviceClass.DURATION,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+    ),
+    "watering_last_duration": SensorEntityDescription(
+        key="watering_last_duration",
+        translation_key="watering_last_duration",
+        device_class=SensorDeviceClass.DURATION,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+    ),
     "last_seen": SensorEntityDescription(
         key="last_seen",
         translation_key="last_seen",
         device_class=SensorDeviceClass.TIMESTAMP,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
+}
+
+MODEL_SENSOR_KEY_OVERRIDES: Final[dict[int, dict[str, str]]] = {
+    72: {
+        "humidity": "soil_moisture",
+    },
+    268: {
+        "temperature": "pool_water_temp",
+    },
 }
 
 
@@ -245,6 +299,16 @@ def _require_description(key: str) -> SensorEntityDescription:
         return SENSOR_DESCRIPTIONS[key]
     except KeyError as err:
         raise KeyError(f"Missing sensor description for key '{key}'") from err
+
+
+def _description_key_for(device: HomgarDevice, sensor_key: str) -> str:
+    """Resolve the Home Assistant sensor description key for a device sensor."""
+    model_code = getattr(device, "model_code", None)
+    if model_code is not None:
+        overrides = MODEL_SENSOR_KEY_OVERRIDES.get(int(model_code))
+        if overrides and sensor_key in overrides:
+            return overrides[sensor_key]
+    return sensor_key
 
 
 async def async_setup_entry(
@@ -347,14 +411,16 @@ class SensorFactory:
 
     def build(self, device: HomgarDevice) -> list[HomgarSensor]:
         """Return all sensors applicable to the provided device."""
-        specs = [
-            SensorSpec(
-                _require_description(mapping.key),
-                mapping.value_fn,
-                mapping.allow_none,
+        specs: list[SensorSpec[HomgarDevice]] = []
+        for mapping in device.iter_sensor_mappings():
+            description_key = _description_key_for(device, mapping.key)
+            specs.append(
+                SensorSpec(
+                    _require_description(description_key),
+                    mapping.value_fn,
+                    mapping.allow_none,
+                )
             )
-            for mapping in device.iter_sensor_mappings()
-        ]
         sensors: list[HomgarSensor] = []
         self._add_from_specs(sensors, device, specs)
         _LOGGER.debug(
